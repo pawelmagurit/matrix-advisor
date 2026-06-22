@@ -1,0 +1,44 @@
+[project]
+name = "matrix-advisor"
+version = "0.1.0"
+description = "PoC: profile pictogram similarity search for extrusion die advisory"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.0",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "scikit-image>=0.22",
+    "pandas>=2.0",
+    "pyarrow>=15.0",
+    "rich>=13.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+ml = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "matrix-advisor[ml]",
+]
+
+[project.scripts]
+matrix-advisor = "matrix_advisor.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/matrix_advisor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
