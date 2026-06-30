@@ -13,7 +13,37 @@ CREATE TABLE IF NOT EXISTS profiles (
     owner_contractor TEXT,
     masa_g_m REAL,
     wall_thickness_mm REAL,
-    has_pictogram INTEGER DEFAULT 0
+    has_pictogram INTEGER DEFAULT 0,
+    processing_status TEXT DEFAULT 'gif_only'
+);
+
+CREATE TABLE IF NOT EXISTS dxf_assets (
+    profile_id TEXT PRIMARY KEY REFERENCES profiles(profile_id),
+    storage_path TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    processed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS profile_dimensions (
+    profile_id TEXT PRIMARY KEY REFERENCES profiles(profile_id),
+    width_mm REAL,
+    height_mm REAL,
+    wall_thickness_mm REAL,
+    ocd_mm REAL,
+    area_mm2 REAL,
+    source TEXT DEFAULT 'dxf'
+);
+
+CREATE TABLE IF NOT EXISTS dimension_validation (
+    profile_id TEXT NOT NULL REFERENCES profiles(profile_id),
+    field_name TEXT NOT NULL,
+    dxf_value REAL,
+    extral_value REAL,
+    delta REAL,
+    status TEXT NOT NULL,
+    PRIMARY KEY (profile_id, field_name)
 );
 
 CREATE TABLE IF NOT EXISTS pictogram_assets (
@@ -75,6 +105,7 @@ _PROFILE_MIGRATIONS = [
     "ALTER TABLE profiles ADD COLUMN masa_g_m REAL",
     "ALTER TABLE profiles ADD COLUMN wall_thickness_mm REAL",
     "ALTER TABLE profiles ADD COLUMN has_pictogram INTEGER DEFAULT 0",
+    "ALTER TABLE profiles ADD COLUMN processing_status TEXT DEFAULT 'gif_only'",
 ]
 
 _MATRIX_MIGRATIONS = [

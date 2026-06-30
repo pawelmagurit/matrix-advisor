@@ -9,6 +9,7 @@ Cut Planner (`tools/cut-planner-demo/`) pozostaje osobnym modułem demo.
 - Python 3.11+
 - Node.js 20+ (UI)
 - Opcjonalnie `[ml]` dla embeddingów ResNet18 (bez tego — fallback HOG)
+- Opcjonalnie `[cad]` dla importu i uploadu DXF (`ezdxf`)
 
 ## Instalacja
 
@@ -16,7 +17,7 @@ Cut Planner (`tools/cut-planner-demo/`) pozostaje osobnym modułem demo.
 cd tools/matrix-advisor-poc
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]"    # zawiera ml + cad (ezdxf)
 
 cd web && npm install && cd ..
 ```
@@ -40,7 +41,7 @@ matrix-advisor dev                       # http://127.0.0.1:5173
 | Widok | Opis |
 |-------|------|
 | **Przeglądarka profili** | Siatka piktogramów, filtry: dostawca matrycy, właściciel profilu, status, wyszukiwanie |
-| **Nowe zamówienie** | Upload piktogramu z oferty → podobne profile z historii |
+| **Nowe zamówienie** | Upload **DXF** (zalecane) lub GIF/PNG → podobne profile, etap 2 z filtrami wymiarowymi |
 | **Podobne profile** | Zapytanie po kształcie + rekomendacja na podstawie historii matryc |
 | **Moduły Extral** | Ekosystem narzędzi (Matrix Advisor aktywny, Cut Planner demo) |
 
@@ -51,10 +52,19 @@ matrix-advisor ingest-extral              # sam import JSON → SQLite
 matrix-advisor normalize                  # maski 256×256 z GIF/PNG
 matrix-advisor build-index --method all   # indeks geometryczny + embedding
 matrix-advisor query -p E06335-4 -m geometric --table
+matrix-advisor import-dxf --dir ../../data/die/rysunki   # batch DXF → geometry + walidacja
+matrix-advisor process-dxf -p E08594                   # jeden profil
 matrix-advisor serve                      # samo API (:8765)
 ```
 
-## API (v0.2)
+### DXF pipeline
+
+- **Źródło prawdy:** plik DXF w `data/raw/dxf/`
+- **Pochodne:** `data/processed/geometry/*.json`, maski, wymiary w SQLite
+- **PDF nie jest obsługiwany** — używaj DXF
+- Obsługiwane konwencje rysunków jak w `data/die/rysunki/` (warstwy `01.Profil`, bloki `EAL_*`, wymiary `DIMENSION`)
+
+## API (v0.4)
 
 ```
 GET /api/v1/health
@@ -64,7 +74,11 @@ GET /api/v1/profiles?search=&supplier=&owner=&status=&page=&page_size=
 GET /api/v1/profiles/{id}
 GET /api/v1/profiles/{id}/pictogram?raw=true
 GET /api/v1/profiles/{id}/advisory?method=embedding&top_k=8
-POST /api/v1/query/by-image   # multipart: file, method, top_k, label
+GET /api/v1/profiles/{id}/dimensions
+GET /api/v1/profiles/{id}/geometry
+POST /api/v1/query/by-image   # multipart: file, method, top_k, label (legacy GIF/PNG)
+POST /api/v1/query/by-dxf     # multipart: file, method, top_k, stage, filters, label
+POST /api/v1/search/similar   # profile_id lub DXF + stage + filters
 ```
 
 ## Struktura danych
@@ -73,7 +87,10 @@ POST /api/v1/query/by-image   # multipart: file, method, top_k, label
 data/
 ├── die/matryce - dane v2.json   # eksport klienta
 ├── raw/pictograms/              # GIF/PNG z base64
+├── raw/dxf/                     # oryginalne DXF (source of truth)
 ├── processed/masks/             # znormalizowane maski
+├── processed/geometry/          # geometry.json z DXF
+├── processed/features/          # features.json
 ├── index/                       # geometric.npz, embedding.npz
 └── matrix_advisor.db
 ```

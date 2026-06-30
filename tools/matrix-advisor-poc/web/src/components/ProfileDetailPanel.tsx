@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchAdvisory, fetchProfile, pictogramUrl, type AdvisoryResponse, type ProfileDetail } from '@/lib/api'
+import { fetchAdvisory, fetchProfile, fetchProfileDimensions, pictogramUrl, type AdvisoryResponse, type ProfileDetail, type ProfileDimensions } from '@/lib/api'
 
 type Props = {
   profileId: string | null
@@ -23,7 +23,8 @@ export function ProfileDetailPanel({ profileId, onClose, showSimilarity = true }
   const [advisory, setAdvisory] = useState<AdvisoryResponse | null>(null)
   const [method, setMethod] = useState<'embedding' | 'geometric'>('embedding')
   const [loading, setLoading] = useState(false)
-  const [tab, setTab] = useState<'matrices' | 'similar'>('matrices')
+  const [tab, setTab] = useState<'matrices' | 'similar' | 'dimensions'>('matrices')
+  const [dims, setDims] = useState<ProfileDimensions | null>(null)
 
   useEffect(() => {
     if (!profileId) {
@@ -35,6 +36,16 @@ export function ProfileDetailPanel({ profileId, onClose, showSimilarity = true }
     fetchProfile(profileId)
       .then(setProfile)
       .finally(() => setLoading(false))
+  }, [profileId])
+
+  useEffect(() => {
+    if (!profileId) {
+      setDims(null)
+      return
+    }
+    fetchProfileDimensions(profileId)
+      .then(setDims)
+      .catch(() => setDims(null))
   }, [profileId])
 
   useEffect(() => {
@@ -99,11 +110,25 @@ export function ProfileDetailPanel({ profileId, onClose, showSimilarity = true }
           <Tab active={tab === 'similar'} onClick={() => setTab('similar')}>
             Podobne
           </Tab>
+          <Tab active={tab === 'dimensions'} onClick={() => setTab('dimensions')}>
+            Wymiary
+          </Tab>
+        </div>
+      )}
+
+      {!showSimilarity && (
+        <div className="flex border-b border-white/10 text-sm">
+          <Tab active={tab === 'matrices'} onClick={() => setTab('matrices')}>
+            Matryce ({profile.matrices.length})
+          </Tab>
+          <Tab active={tab === 'dimensions'} onClick={() => setTab('dimensions')}>
+            Wymiary
+          </Tab>
         </div>
       )}
 
       <div className="flex-1 overflow-y-auto p-4">
-        {(!showSimilarity || tab === 'matrices') && (
+        {(!showSimilarity || tab === 'matrices') && tab !== 'dimensions' && (
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="text-slate-500">
@@ -130,6 +155,50 @@ export function ProfileDetailPanel({ profileId, onClose, showSimilarity = true }
               ))}
             </tbody>
           </table>
+        )}
+
+        {tab === 'dimensions' && (
+          <div className="space-y-3 text-xs">
+            {dims?.note && <p className="text-slate-500">{dims.note}</p>}
+            {dims?.dimensions ? (
+              <table className="w-full">
+                <thead>
+                  <tr className="text-slate-500">
+                    <th className="pb-2 text-left">Pole</th>
+                    <th className="pb-2 text-left">DXF</th>
+                    <th className="pb-2 text-left">Extral</th>
+                    <th className="pb-2 text-left">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(dims.validation?.length ? dims.validation : []).map((v) => (
+                    <tr key={v.field_name} className="border-t border-white/5 text-slate-300">
+                      <td className="py-2">{v.field_name}</td>
+                      <td className="py-2 font-mono">{v.dxf_value ?? '—'}</td>
+                      <td className="py-2 font-mono">{v.extral_value ?? '—'}</td>
+                      <td className="py-2">
+                        <span
+                          className={
+                            v.status === 'ok'
+                              ? 'text-emerald-400'
+                              : v.status === 'mismatch'
+                                ? 'text-red-400'
+                                : 'text-slate-500'
+                          }
+                        >
+                          {v.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-slate-500">
+                Brak wymiarów z DXF. Uruchom: matrix-advisor import-dxf --dir data/die/rysunki
+              </p>
+            )}
+          </div>
         )}
 
         {showSimilarity && tab === 'similar' && (

@@ -23,10 +23,13 @@ ml = [
     "torch>=2.0",
     "torchvision>=0.15",
 ]
+cad = [
+    "ezdxf>=1.0",
+]
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
-    "matrix-advisor[ml]",
+    "matrix-advisor[ml,cad]",
 ]
 
 [project.scripts]

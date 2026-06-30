@@ -47,6 +47,7 @@ def extract_geometric_features(profile_id: str, mask: np.ndarray | None = None) 
     hu = -np.sign(hu) * np.log10(np.abs(hu) + 1e-12)
 
     hole_count = _count_holes(mask)
+    cavity_count = hole_count  # topological cavities inside outer contour
     contour_count = len(contours)
 
     canvas_area = CANVAS_SIZE * CANVAS_SIZE
@@ -54,6 +55,7 @@ def extract_geometric_features(profile_id: str, mask: np.ndarray | None = None) 
         profile_id=profile_id,
         aspect_ratio=float(aspect),
         hole_count=hole_count,
+        cavity_count=cavity_count,
         contour_count=contour_count,
         area_norm=float(area / canvas_area),
         perimeter_norm=float(perimeter / (4 * CANVAS_SIZE)),
@@ -107,3 +109,53 @@ def zscore_matrix(vectors: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
     std = vectors.std(axis=0)
     std[std < 1e-8] = 1.0
     return (vectors - mean) / std, mean, std
+
+
+def _outer_contour(mask: np.ndarray):
+    binary = (mask > 127).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    return max(contours, key=cv2.contourArea)
+
+
+def outer_contour_score(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
+    """Hu-moment similarity of outer contours (0–1)."""
+    ca, cb = _outer_contour(mask_a), _outer_contour(mask_b)
+    if ca is None or cb is None:
+        return 0.0
+    ma = cv2.moments(ca)
+    mb = cv2.moments(cb)
+    hua = cv2.HuMoments(ma).flatten()
+    hub = cv2.HuMoments(mb).flatten()
+    hua = -np.sign(hua) * np.log10(np.abs(hua) + 1e-12)
+    hub = -np.sign(hub) * np.log10(np.abs(hub) + 1e-12)
+    dist = float(np.linalg.norm(hua - hub))
+    return max(0.0, 1.0 / (1.0 + dist))
+
+
+def inner_detail_score(
+    query_features: dict,
+    cand_features: dict,
+    mask_a: np.ndarray,
+    mask_b: np.ndarray,
+) -> float:
+    """Penalize mismatched holes/cavities; blend with inner region overlap."""
+    qh = query_features.get("hole_count", query_features.get("cavity_count", 0))
+    ch = cand_features.get("hole_count", cand_features.get("cavity_count", 0))
+    hole_sim = 1.0 if qh == ch else max(0.0, 1.0 - abs(int(qh) - int(ch)) * 0.35)
+
+    inner_a = cv2.bitwise_not(_outer_contour_mask(mask_a))
+    inner_b = cv2.bitwise_not(_outer_contour_mask(mask_b))
+    inter = np.logical_and(inner_a > 0, inner_b > 0).sum()
+    union = np.logical_or(inner_a > 0, inner_b > 0).sum()
+    iou = float(inter / union) if union else 0.0
+    return 0.6 * hole_sim + 0.4 * iou
+
+
+def _outer_contour_mask(mask: np.ndarray) -> np.ndarray:
+    out = np.zeros_like(mask)
+    c = _outer_contour(mask)
+    if c is not None:
+        cv2.drawContours(out, [c], -1, 255, thickness=cv2.FILLED)
+    return out

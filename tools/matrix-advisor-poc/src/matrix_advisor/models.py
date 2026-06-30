@@ -71,6 +71,7 @@ class GeometricFeatures(BaseModel):
     profile_id: str
     aspect_ratio: float
     hole_count: int
+    cavity_count: int = 0
     contour_count: int
     area_norm: float
     perimeter_norm: float

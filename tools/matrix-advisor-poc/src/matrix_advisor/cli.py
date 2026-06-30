@@ -19,6 +19,7 @@ from matrix_advisor.ingestion.import_csv import ingest_matrices, ingest_profiles
 from matrix_advisor.ingestion.import_extral_json import ingest_extral_json
 from matrix_advisor.ingestion.sample_data import generate_sample_data
 from matrix_advisor.models import QueryResponse, SimilarityMethod
+from matrix_advisor.dxf.pipeline import import_dxf_directory, process_dxf_file
 from matrix_advisor.normalization.pipeline import normalize_all
 
 app = typer.Typer(
@@ -161,6 +162,43 @@ def cmd_bootstrap_extral(
         build_embedding_index()
         console.print(f"[green]Indeks gotowy ({backend})[/green]")
     console.print("[green]Bootstrap zakończony.[/green] Uruchom: [bold]matrix-advisor dev[/bold]")
+
+
+@app.command("process-dxf")
+def cmd_process_dxf(
+    profile_id: str = typer.Option(..., "--profile-id", "-p"),
+    dxf_path: Path | None = typer.Option(None, exists=True, help="DXF file (default: data/raw/dxf/{id}.dxf)"),
+) -> None:
+    """Process a single profile DXF through the full pipeline."""
+    from matrix_advisor.config import RAW_DXF
+
+    init_db()
+    path = dxf_path or (RAW_DXF / f"{profile_id}.dxf")
+    if not path.exists():
+        raise typer.BadParameter(f"DXF not found: {path}")
+    result = process_dxf_file(path, persist=True)
+    console.print(f"[green]Processed[/green] {profile_id} strategy={result.selection.strategy}")
+    console.print(f"Dimensions: {result.dimensions_mapped}")
+    if result.quality_flags:
+        console.print(f"Flags: {result.quality_flags}")
+
+
+@app.command("import-dxf")
+def cmd_import_dxf(
+    directory: Path = typer.Option(..., "--dir", exists=True, help="Folder with *.dxf files"),
+) -> None:
+    """Batch-import DXF files from a directory."""
+    init_db()
+    reports = import_dxf_directory(directory)
+    table = Table(title=f"Import DXF from {directory}")
+    table.add_column("File")
+    table.add_column("Status")
+    table.add_column("Strategy")
+    table.add_column("Notes")
+    for r in reports:
+        notes = r.get("error") or ", ".join(r.get("quality_flags") or [])
+        table.add_row(r["file"], r["status"], r.get("strategy", "—"), notes[:60])
+    console.print(table)
 
 
 @app.command("dev")

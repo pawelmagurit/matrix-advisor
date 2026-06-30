@@ -63,6 +63,10 @@ def _validate_upload(
     content_type: str | None,
     filename: str | None,
 ) -> None:
+    if filename and filename.lower().endswith(".pdf"):
+        raise ValueError("PDF is not supported — upload DXF instead")
+    if content_type and "pdf" in content_type.lower():
+        raise ValueError("PDF is not supported — upload DXF instead")
     if len(data) == 0:
         raise ValueError("Empty file")
     if len(data) > MAX_UPLOAD_BYTES:

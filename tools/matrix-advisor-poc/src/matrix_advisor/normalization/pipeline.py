@@ -29,6 +29,64 @@ def _largest_contour_bbox(binary: np.ndarray) -> tuple[int, int, int, int]:
     return x, y, w, h
 
 
+def _fit_mask_to_canvas(binary: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """Crop, square-pad, and resize a white-on-black mask to CANVAS_SIZE."""
+    flags: list[str] = []
+    if binary.size == 0 or binary.max() == 0:
+        flags.append("empty_contour")
+        return np.zeros((CANVAS_SIZE, CANVAS_SIZE), dtype=np.uint8), flags
+
+    ys, xs = np.where(binary > 127)
+    if len(xs) == 0:
+        flags.append("empty_contour")
+        return np.zeros((CANVAS_SIZE, CANVAS_SIZE), dtype=np.uint8), flags
+
+    x, y = int(xs.min()), int(ys.min())
+    w, h = int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
+    crop = binary[y : y + h, x : x + w]
+
+    ch, cw = crop.shape
+    side = max(ch, cw)
+    pad_top = (side - ch) // 2
+    pad_left = (side - cw) // 2
+    square = np.zeros((side, side), dtype=np.uint8)
+    square[pad_top : pad_top + ch, pad_left : pad_left + cw] = crop
+
+    normalized = cv2.resize(square, (CANVAS_SIZE, CANVAS_SIZE), interpolation=cv2.INTER_AREA)
+    _, normalized = cv2.threshold(normalized, 127, 255, cv2.THRESH_BINARY)
+    return normalized, flags
+
+
+def _solidify_mask(binary: np.ndarray) -> np.ndarray:
+    """Turn line/outline drawings into a filled silhouette."""
+    if binary.max() == 0:
+        return binary
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        filled = np.zeros_like(closed)
+        chosen = max(contours, key=cv2.contourArea)
+        cv2.drawContours(filled, [chosen], -1, 255, thickness=cv2.FILLED)
+        if filled.max() > 0:
+            return filled
+
+    # Ring/hatch outlines: flood-fill exterior, keep interior as solid shape.
+    h, w = closed.shape
+    inv = (255 - closed).copy()
+    flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+    cv2.floodFill(inv, flood_mask, (0, 0), 0)
+    return 255 - inv
+
+
+def normalize_dxf_raster(raster: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """Normalize DXF raster (already white shape on black) to canonical mask."""
+    binary = (raster > 127).astype(np.uint8) * 255
+    binary = _solidify_mask(binary)
+    return _fit_mask_to_canvas(binary)
+
+
 def _count_holes(binary_crop: np.ndarray) -> int:
     """Count enclosed cavities inside the shape (excluding outer background)."""
     filled = binary_crop.copy()
@@ -50,25 +108,14 @@ def _count_holes(binary_crop: np.ndarray) -> int:
 def normalize_grayscale(gray: np.ndarray) -> tuple[np.ndarray, list[str]]:
     """Normalize a grayscale image array to canonical mask (no DB writes)."""
     binary = _to_binary(gray)
-    x, y, w, h = _largest_contour_bbox(binary)
     flags: list[str] = []
 
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    crop = binary[y : y + h, x : x + w]
-    if crop.size == 0:
-        crop = binary
+    if not contours:
         flags.append("empty_contour")
 
-    ch, cw = crop.shape
-    side = max(ch, cw)
-    pad_top = (side - ch) // 2
-    pad_left = (side - cw) // 2
-    square = np.zeros((side, side), dtype=np.uint8)
-    square[pad_top : pad_top + ch, pad_left : pad_left + cw] = crop
-
-    scale = CANVAS_SIZE / side
-    normalized = cv2.resize(square, (CANVAS_SIZE, CANVAS_SIZE), interpolation=cv2.INTER_AREA)
-    _, normalized = cv2.threshold(normalized, 127, 255, cv2.THRESH_BINARY)
+    normalized, fit_flags = _fit_mask_to_canvas(binary)
+    flags.extend(fit_flags)
     return normalized, flags
 
 
@@ -155,9 +202,37 @@ def normalize_all(profile_ids: list[str] | None = None) -> dict[str, int]:
     return stats
 
 
+def _mask_is_corrupt(mask: np.ndarray) -> bool:
+    """Detect normalization artifacts (e.g. full-canvas fill)."""
+    if mask is None or mask.size == 0:
+        return True
+    white = int((mask > 127).sum())
+    total = mask.size
+    if white < 80:
+        return True
+    if white > total * 0.85:
+        return True
+    return False
+
+
+def load_mask_from_pictogram(profile_id: str) -> np.ndarray | None:
+    """Build canonical mask from Extral GIF/PNG source."""
+    src = get_pictogram_path(profile_id)
+    if src is None:
+        return None
+    img = cv2.imread(str(src), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    mask, flags = normalize_grayscale(img)
+    if "empty_contour" in flags or mask.max() == 0:
+        return None
+    return mask
+
+
 def load_mask(profile_id: str) -> np.ndarray | None:
     path = mask_path_for(profile_id)
-    if not path.exists():
-        return None
-    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    return img
+    if path.exists():
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is not None and not _mask_is_corrupt(img):
+            return img
+    return load_mask_from_pictogram(profile_id)

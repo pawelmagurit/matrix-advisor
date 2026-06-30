@@ -78,6 +78,49 @@ export type UploadQueryResponse = AdvisoryResponse & {
   query_preview: string
   quality_flags?: string[]
   index_warning?: string
+  stage?: number
+  extracted_dimensions?: Record<string, number | null>
+  stage1_count?: number
+  stage2_count?: number
+  filters_applied?: Record<string, unknown>
+  similar: Array<
+    AdvisoryResponse['similar'][number] & {
+      total_score?: number
+      shape_score?: number
+      score_breakdown?: Record<string, number | null>
+      metadata_match?: Record<string, string>
+      dimensions?: Record<string, number | null>
+      features?: Record<string, number | null>
+    }
+  >
+}
+
+export type DxfPreviewResponse = {
+  filename: string | null
+  profile_id: string
+  profile_id_hint: string
+  query_preview: string
+  extracted_dimensions?: Record<string, number | null>
+  quality_flags?: string[]
+  preview_warning?: string | null
+  selection?: {
+    strategy: string
+    layer: string | null
+    block: string | null
+  }
+}
+
+export type ProfileDimensions = {
+  profile_id: string
+  dimensions: Record<string, number | null> | null
+  validation: Array<{
+    field_name: string
+    dxf_value: number | null
+    extral_value: number | null
+    delta: number | null
+    status: string
+  }>
+  note?: string
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -141,3 +184,56 @@ export async function fetchQueryByImage(
   }
   return res.json() as Promise<UploadQueryResponse>
 }
+
+export async function fetchQueryByDxf(
+  file: File,
+  method: string,
+  topK: number,
+  stage: number,
+  label?: string,
+  filters?: Record<string, unknown>,
+): Promise<UploadQueryResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('method', method)
+  form.append('top_k', String(topK))
+  form.append('stage', String(stage))
+  if (label) form.append('label', label)
+  if (filters && Object.keys(filters).length > 0) {
+    form.append('filters', JSON.stringify(filters))
+  }
+
+  const res = await fetch(`${BASE}/query/by-dxf`, { method: 'POST', body: form })
+  if (!res.ok) {
+    let msg = res.statusText
+    try {
+      const body = await res.json()
+      msg = body.detail ?? msg
+    } catch {
+      msg = await res.text().catch(() => msg)
+    }
+    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+  }
+  return res.json() as Promise<UploadQueryResponse>
+}
+
+export async function fetchDxfPreview(file: File): Promise<DxfPreviewResponse> {
+  const form = new FormData()
+  form.append('file', file)
+
+  const res = await fetch(`${BASE}/dxf/preview`, { method: 'POST', body: form })
+  if (!res.ok) {
+    let msg = res.statusText
+    try {
+      const body = await res.json()
+      msg = body.detail ?? msg
+    } catch {
+      msg = await res.text().catch(() => msg)
+    }
+    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+  }
+  return res.json() as Promise<DxfPreviewResponse>
+}
+
+export const fetchProfileDimensions = (id: string) =>
+  get<ProfileDimensions>(`/profiles/${encodeURIComponent(id)}/dimensions`)
