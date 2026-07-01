@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from matrix_advisor.config import RAW_PICTOGRAMS
+from matrix_advisor import config
 from matrix_advisor.db import get_connection
 from matrix_advisor.models import Matrix, MatrixProductionSummary, Profile, Supplier
 
@@ -32,7 +32,7 @@ def upsert_supplier(conn, name: str) -> str:
 
 def ingest_profiles(manifest_path: Path, pictograms_dir: Path) -> dict[str, int]:
     """Import profiles.csv + copy pictograms to data/raw/pictograms/."""
-    RAW_PICTOGRAMS.mkdir(parents=True, exist_ok=True)
+    config.RAW_PICTOGRAMS.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(manifest_path, dtype=str).fillna("")
     df.columns = [c.strip().lower() for c in df.columns]
 
@@ -65,7 +65,7 @@ def ingest_profiles(manifest_path: Path, pictograms_dir: Path) -> dict[str, int]
 
             if src.exists():
                 ext = src.suffix.lower().lstrip(".") or "unknown"
-                dest = RAW_PICTOGRAMS / f"{profile_id}{src.suffix.lower() or '.png'}"
+                dest = config.RAW_PICTOGRAMS / f"{profile_id}{src.suffix.lower() or '.png'}"
                 shutil.copy2(src, dest)
                 checksum = _checksum(dest)
 

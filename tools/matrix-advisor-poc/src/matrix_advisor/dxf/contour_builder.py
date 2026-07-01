@@ -52,10 +52,11 @@ def entity_to_polylines(entity: Any) -> list[list[tuple[float, float]]]:
         try:
             from ezdxf import path as ezdxf_path
 
-            p = ezdxf_path.make_path(entity)
-            pts = [(float(v.x), float(v.y)) for v in p.flattening(0.05)]
-            if pts:
-                polylines.append(pts)
+            for boundary in entity.paths:
+                p = ezdxf_path.from_hatch_boundary_path(boundary)
+                pts = [(float(v.x), float(v.y)) for v in p.flattening(0.05)]
+                if pts:
+                    polylines.append(pts)
         except Exception:
             pass
 

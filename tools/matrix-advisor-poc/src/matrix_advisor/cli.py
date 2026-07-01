@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from matrix_advisor.config import EXTRAL_JSON, SAMPLE_DIR, ensure_data_dirs
+from matrix_advisor.config import DATA_ROOT, EXTRAL_JSON, RAW_DXF, ensure_data_dirs
 from matrix_advisor.db import init_db
 from matrix_advisor.embeddings.encoder import embedding_backend_name
 from matrix_advisor.index.builder import (
@@ -17,10 +17,10 @@ from matrix_advisor.index.builder import (
 )
 from matrix_advisor.ingestion.import_csv import ingest_matrices, ingest_profiles
 from matrix_advisor.ingestion.import_extral_json import ingest_extral_json
-from matrix_advisor.ingestion.sample_data import generate_sample_data
 from matrix_advisor.models import QueryResponse, SimilarityMethod
 from matrix_advisor.dxf.pipeline import import_dxf_directory, process_dxf_file
-from matrix_advisor.normalization.pipeline import normalize_all
+from matrix_advisor.index.builder import update_index_rows
+from matrix_advisor.normalization.pipeline import normalize_all, repair_masks
 
 app = typer.Typer(
     name="matrix-advisor",
@@ -41,15 +41,6 @@ def cmd_init_db() -> None:
     path = init_db()
     ensure_data_dirs()
     console.print(f"[green]Database ready:[/green] {path}")
-
-
-@app.command("sample-data")
-def cmd_sample_data(
-    count: int = typer.Option(24, help="Number of synthetic profiles"),
-) -> None:
-    """Generate synthetic pictograms and CSV manifests under data/sample/."""
-    out = generate_sample_data(count=count)
-    console.print(f"[green]Sample data written to[/green] {out}")
 
 
 @app.command("ingest")
@@ -183,6 +174,24 @@ def cmd_process_dxf(
         console.print(f"Flags: {result.quality_flags}")
 
 
+@app.command("repair-masks")
+def cmd_repair_masks(
+    iou_threshold: float = typer.Option(
+        0.9, help="Regeneruj maskę gdy IoU ze wzorcowym piktogramem < próg"
+    ),
+    skip_index: bool = typer.Option(False, help="Pomiń aktualizację indeksu"),
+) -> None:
+    """Napraw zdegenerowane maski (nadpisane przez import DXF) z piktogramów."""
+    init_db()
+    repaired = repair_masks(iou_threshold=iou_threshold)
+    console.print(f"[green]Naprawiono masek:[/green] {len(repaired)}")
+    if repaired:
+        console.print(", ".join(repaired[:50]) + (" …" if len(repaired) > 50 else ""))
+    if repaired and not skip_index:
+        stats = update_index_rows(repaired)
+        console.print(f"[green]Zaktualizowano indeks:[/green] {stats}")
+
+
 @app.command("import-dxf")
 def cmd_import_dxf(
     directory: Path = typer.Option(..., "--dir", exists=True, help="Folder with *.dxf files"),
@@ -199,6 +208,91 @@ def cmd_import_dxf(
         notes = r.get("error") or ", ".join(r.get("quality_flags") or [])
         table.add_row(r["file"], r["status"], r.get("strategy", "—"), notes[:60])
     console.print(table)
+
+
+@app.command("eval-dxf")
+def cmd_eval_dxf(
+    directory: Path = typer.Option(RAW_DXF, "--dir", exists=True, help="Folder z plikami *.dxf"),
+    top_k: int = typer.Option(50, "--top-k", "-k", help="Głębokość rankingu dla self-retrieval"),
+    out: Path = typer.Option(DATA_ROOT / "reports" / "dxf_eval.json", "--out", help="Zapisz pełny raport JSON"),
+) -> None:
+    """Oceń jakość ekstrakcji DXF→maska względem piktogramu (fallback wyłączony).
+
+    Piktogram = ground truth. Mierzy IoU(maska z DXF, piktogram) oraz pozycję,
+    na której zapytanie samą maską z DXF odzyskuje własny piktogram z indeksu.
+    """
+    from matrix_advisor.eval.dxf_pictogram_eval import evaluate_dxf_directory
+
+    init_db()
+    report = evaluate_dxf_directory(directory, top_k=top_k, out_path=out)
+    s = report["summary"]
+    console.print(
+        f"[bold]Eval DXF→piktogram[/bold]  plików={s['total_files']} "
+        f"ocenionych={s['evaluated']} błędów={s['errors']} bez_piktogramu={s['no_pictogram']}"
+    )
+    console.print(f"IoU: średnia={s['iou_mean']} mediana={s['iou_median']}  kubełki={s['iou_buckets']}")
+    console.print(
+        f"Self-retrieval: @1={s['retrieval_at_1_pct']}%  @5={s['retrieval_at_5_pct']}%  "
+        f"@10={s['retrieval_at_10_pct']}%  poza_top{top_k}={s['not_retrieved_pct']}%"
+    )
+    tbl = Table(title="Per-file")
+    for col in ("Profile", "Strategy", "IoU", "Bucket", "SelfRank", "Top1", "Flags"):
+        tbl.add_column(col)
+    for r in report["rows"]:
+        tbl.add_row(
+            r["profile_id"],
+            str(r.get("strategy") or "—"),
+            str(r.get("iou") if r.get("iou") is not None else r["status"]),
+            str(r.get("iou_bucket") or "—"),
+            str(r.get("self_rank") if r.get("self_rank") is not None else "—"),
+            str(r.get("top1_id") or "—"),
+            ", ".join(r.get("quality_flags") or [])[:40],
+        )
+    console.print(tbl)
+    if report["rows"]:
+        by_strat = s["by_strategy"]
+        st = Table(title="Per-strategy")
+        for col in ("Strategy", "N", "IoU mean", "Retr@1 %"):
+            st.add_column(col)
+        for name, b in sorted(by_strat.items(), key=lambda kv: -kv[1]["count"]):
+            st.add_row(name, str(b["count"]), str(b["iou_mean"]), str(b["retr_at1_pct"]))
+        console.print(st)
+    if out:
+        console.print(f"[green]Raport:[/green] {out}")
+
+
+@app.command("select-dxf-sample")
+def cmd_select_dxf_sample(
+    n: int = typer.Option(400, "--n", help="Docelowa liczność próbki do poproszenia"),
+    out: Path = typer.Option(DATA_ROOT / "reports" / "dxf_sample_request.csv", "--out"),
+    include_existing: bool = typer.Option(
+        False, "--include-existing", help="Nie wykluczaj profili, dla których już mamy DXF"
+    ),
+    min_per_stratum: int = typer.Option(
+        1, "--min-per-stratum", help="Min. reprezentantów na wartość każdej fasety metadanych"
+    ),
+) -> None:
+    """Wygeneruj reprezentatywną (nie losową) listę indeksów, których DXF poprosić."""
+    from matrix_advisor.eval.sample_selector import select_sample, write_sample_csv
+
+    init_db()
+    result = select_sample(
+        n=n,
+        exclude_existing_dxf=not include_existing,
+        min_per_stratum=min_per_stratum,
+    )
+    write_sample_csv(result, out)
+    cov = result.coverage
+    console.print(
+        f"[bold]Próbka DXF do poproszenia[/bold] — wybrano {cov['selected']} "
+        f"(cel {cov['requested_n']})"
+    )
+    for facet, info in cov["facets"].items():
+        console.print(
+            f"  {facet}: pokryto {info['values_covered']}/{info['values_total']} wartości  "
+            f"{info['distribution']}"
+        )
+    console.print(f"[green]Lista CSV:[/green] {out}")
 
 
 @app.command("dev")
@@ -244,35 +338,6 @@ def cmd_serve(
     init_db()
     console.print(f"[green]Matrix Advisor API[/green] http://{host}:{port}/api/v1/health")
     uvicorn.run("matrix_advisor.api.server:app", host=host, port=port, reload=False)
-
-
-@app.command("pipeline")
-def cmd_pipeline(
-    count: int = typer.Option(24, help="Sample profile count"),
-    force: bool = typer.Option(False, "--force", help="Pozwól nadpisać indeks przy dużej bazie Extral"),
-) -> None:
-    """Run full PoC pipeline on synthetic sample data."""
-    from matrix_advisor.query.service import get_stats
-
-    stats = get_stats()
-    if stats["profiles"] > 500 and not force:
-        console.print(
-            "[red]Baza zawiera dane Extral "
-            f"({stats['profiles']} profili).[/red] "
-            "Pipeline nadpisze indeks sample'ami.\n"
-            "Użyj --force jeśli naprawdę chcesz sample, "
-            "albo: matrix-advisor build-index --method all"
-        )
-        raise typer.Exit(1)
-    init_db()
-    generate_sample_data(count=count)
-    ingest_profiles(SAMPLE_DIR / "profiles.csv", SAMPLE_DIR / "pictograms")
-    ingest_matrices(SAMPLE_DIR / "matrices.csv")
-    normalize_all()
-    build_geometric_index()
-    build_embedding_index()
-    console.print("[green]Pipeline complete.[/green]")
-    console.print("  Dev:  matrix-advisor dev")
 
 
 if __name__ == "__main__":

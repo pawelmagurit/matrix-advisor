@@ -13,7 +13,6 @@ PROCESSED_FEATURES = DATA_ROOT / "processed" / "features"
 FEATURES_DIR = DATA_ROOT / "features"
 INDEX_DIR = DATA_ROOT / "index"
 DB_PATH = DATA_ROOT / "matrix_advisor.db"
-SAMPLE_DIR = DATA_ROOT / "sample"
 EXTRAL_JSON = DATA_ROOT / "die" / "matryce - dane v2.json"
 
 CANVAS_SIZE = 256
@@ -57,7 +56,6 @@ def ensure_data_dirs() -> None:
         PROCESSED_FEATURES,
         FEATURES_DIR,
         INDEX_DIR,
-        SAMPLE_DIR,
         QUERY_TMP_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)

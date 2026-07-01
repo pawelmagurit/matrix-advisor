@@ -33,6 +33,27 @@ def _group_concentric_circles(
     return groups
 
 
+def _hatch_boundary_to_points(boundary_path, flatten: float = 0.05) -> list[tuple[float, float]]:
+    from ezdxf import path as ezdxf_path
+
+    path = ezdxf_path.from_hatch_boundary_path(boundary_path)
+    return [(float(v.x), float(v.y)) for v in path.flattening(flatten)]
+
+
+def _rasterize_hatch(hatch, to_px, render_size: int) -> np.ndarray:
+    """Fill a HATCH entity using even-odd rules across boundary paths."""
+    img = np.zeros((render_size, render_size), dtype=np.uint8)
+    for boundary in hatch.paths:
+        pts = _hatch_boundary_to_points(boundary)
+        if len(pts) < 3:
+            continue
+        arr = np.array([to_px(x, y) for x, y in pts], dtype=np.int32)
+        layer = np.zeros_like(img)
+        cv2.fillPoly(layer, [arr], 255)
+        img = cv2.bitwise_xor(img, layer)
+    return img
+
+
 def _draw_circle_groups(
     img: np.ndarray,
     groups: list[list[tuple[float, float, float]]],
@@ -86,15 +107,17 @@ def rasterize_entities(entities: list, render_size: int = 1024) -> np.ndarray:
 
     non_circles = [e for e in entities if e.dxftype() != "CIRCLE"]
     for entity in non_circles:
-        is_hatch = entity.dxftype() == "HATCH"
-        closed = is_hatch or bool(getattr(entity, "closed", False))
+        if entity.dxftype() == "HATCH":
+            hatch_img = _rasterize_hatch(entity, to_px, render_size)
+            img = cv2.bitwise_or(img, hatch_img)
+            continue
+
+        closed = bool(getattr(entity, "closed", False))
         for pl in entity_to_polylines(entity):
             if len(pl) < 2:
                 continue
             pts = np.array([to_px(x, y) for x, y in pl], dtype=np.int32)
-            if is_hatch:
-                cv2.polylines(img, [pts], True, 255, thickness=2)
-            elif closed and len(pts) >= 3:
+            if closed and len(pts) >= 3:
                 cv2.fillPoly(img, [pts], 255)
                 cv2.polylines(img, [pts], True, 255, 1)
             else:

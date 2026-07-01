@@ -6,7 +6,7 @@ from matrix_advisor.config import DB_PATH, INDEX_DIR
 from matrix_advisor.db import init_db
 from matrix_advisor.index.builder import build_embedding_index, build_geometric_index, query_similar
 from matrix_advisor.ingestion.import_csv import ingest_matrices, ingest_profiles, list_profile_ids
-from matrix_advisor.ingestion.sample_data import generate_sample_data
+from sample_data import generate_sample_data
 from matrix_advisor.models import SimilarityMethod
 from matrix_advisor.normalization.pipeline import normalize_all
 
@@ -21,14 +21,13 @@ def fresh_db(tmp_path, monkeypatch):
     monkeypatch.setattr("matrix_advisor.config.FEATURES_DIR", data_root / "features")
     monkeypatch.setattr("matrix_advisor.config.INDEX_DIR", data_root / "index")
     monkeypatch.setattr("matrix_advisor.config.DB_PATH", data_root / "matrix_advisor.db")
-    monkeypatch.setattr("matrix_advisor.config.SAMPLE_DIR", data_root / "sample")
     monkeypatch.setattr("matrix_advisor.db.DB_PATH", data_root / "matrix_advisor.db")
-    yield
+    return data_root
 
 
-def test_full_pipeline_sample_data():
+def test_full_pipeline_sample_data(fresh_db):
     init_db()
-    sample_dir = generate_sample_data(count=12)
+    sample_dir = generate_sample_data(fresh_db / "sample", count=12)
     ingest_profiles(sample_dir / "profiles.csv", sample_dir / "pictograms")
     ingest_matrices(sample_dir / "matrices.csv")
 
@@ -38,8 +37,8 @@ def test_full_pipeline_sample_data():
     assert norm["ok"] == 12
     assert norm["failed"] == 0
 
-    build_geometric_index()
-    build_embedding_index()
+    build_geometric_index(list_profile_ids())
+    build_embedding_index(list_profile_ids())
 
     assert (INDEX_DIR / "geometric.npz").exists()
     assert (INDEX_DIR / "embedding.npz").exists()
@@ -55,13 +54,12 @@ def test_full_pipeline_sample_data():
     assert emb[0].score > 0
 
 
-def test_query_unknown_profile_raises():
+def test_query_unknown_profile_raises(fresh_db):
     init_db()
-    generate_sample_data(count=6)
-    sample_dir = INDEX_DIR.parent / "sample"
+    sample_dir = generate_sample_data(fresh_db / "sample", count=6)
     ingest_profiles(sample_dir / "profiles.csv", sample_dir / "pictograms")
     normalize_all()
-    build_geometric_index()
+    build_geometric_index(list_profile_ids())
 
     with pytest.raises(ValueError, match="No geometric features"):
         query_similar("NONEXISTENT", SimilarityMethod.GEOMETRIC, top_k=3)

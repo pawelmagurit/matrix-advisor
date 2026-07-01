@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from matrix_advisor.config import FEATURES_DIR, INDEX_DIR
+from matrix_advisor import config
 from matrix_advisor.embeddings.encoder import (
     embed_with_rotations,
     embedding_backend_name,
@@ -20,13 +20,20 @@ from matrix_advisor.models import SimilarityMethod, SimilarityResult
 
 
 def _index_path(method: SimilarityMethod) -> Path:
-    return INDEX_DIR / f"{method.value}.npz"
+    return config.INDEX_DIR / f"{method.value}.npz"
+
+
+def _production_profile_ids(profile_ids: list[str] | None = None) -> list[str]:
+    ids = list_profile_ids() if profile_ids is None else profile_ids
+    if profile_ids is None:
+        ids = [pid for pid in ids if not pid.startswith("E-SAMPLE-")]
+    return ids
 
 
 def build_geometric_index(profile_ids: list[str] | None = None) -> Path:
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
-    ids = profile_ids or list_profile_ids()
+    config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    config.FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+    ids = _production_profile_ids(profile_ids)
     rows = []
     vectors = []
     valid_ids = []
@@ -46,7 +53,7 @@ def build_geometric_index(profile_ids: list[str] | None = None) -> Path:
     zmat, mean, std = zscore_matrix(mat)
     weights = weight_vector()
 
-    parquet_path = FEATURES_DIR / "geometric.parquet"
+    parquet_path = config.FEATURES_DIR / "geometric.parquet"
     pd.DataFrame(rows).to_parquet(parquet_path, index=False)
 
     path = _index_path(SimilarityMethod.GEOMETRIC)
@@ -62,8 +69,8 @@ def build_geometric_index(profile_ids: list[str] | None = None) -> Path:
 
 
 def build_embedding_index(profile_ids: list[str] | None = None) -> Path:
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    ids = profile_ids or list_profile_ids()
+    config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    ids = _production_profile_ids(profile_ids)
     valid_ids = []
     vectors = []
 
@@ -88,6 +95,72 @@ def build_embedding_index(profile_ids: list[str] | None = None) -> Path:
         backend=backend,
     )
     return path
+
+
+def update_index_rows(profile_ids: list[str]) -> dict[str, int]:
+    """Recompute index vectors for specific profiles in place.
+
+    Cheaper than a full rebuild when only a handful of masks changed (e.g. after
+    repair_masks). Rows already present are overwritten; new ids are appended.
+    """
+    from matrix_advisor.embeddings.encoder import embed_with_rotations
+
+    updated = {"embedding": 0, "geometric": 0}
+    if not profile_ids:
+        return updated
+
+    # Embedding index (stores primary 0deg vector per profile).
+    emb_path = _index_path(SimilarityMethod.EMBEDDING)
+    if emb_path.exists():
+        data = np.load(emb_path, allow_pickle=True)
+        ids = list(data["profile_ids"])
+        vectors = data["vectors"]
+        backend = str(data.get("backend", ""))
+        id_to_row = {pid: i for i, pid in enumerate(ids)}
+        for pid in profile_ids:
+            rots = embed_with_rotations(pid, backend="auto")
+            if not rots:
+                continue
+            vec = rots[0]
+            if pid in id_to_row:
+                vectors[id_to_row[pid]] = vec
+            else:
+                ids.append(pid)
+                vectors = np.vstack([vectors, vec[None, :]])
+                id_to_row[pid] = len(ids) - 1
+            updated["embedding"] += 1
+        np.savez(emb_path, profile_ids=np.array(ids), vectors=vectors, backend=backend)
+
+    # Geometric index (z-scored against stored mean/std).
+    geo_path = _index_path(SimilarityMethod.GEOMETRIC)
+    if geo_path.exists():
+        data = np.load(geo_path, allow_pickle=True)
+        ids = list(data["profile_ids"])
+        vectors = data["vectors"]
+        mean, std = data["mean"], data["std"]
+        id_to_row = {pid: i for i, pid in enumerate(ids)}
+        for pid in profile_ids:
+            feat = extract_geometric_features(pid)
+            if feat is None:
+                continue
+            zvec = (feature_vector(feat) - mean) / std
+            if pid in id_to_row:
+                vectors[id_to_row[pid]] = zvec
+            else:
+                ids.append(pid)
+                vectors = np.vstack([vectors, zvec[None, :]])
+                id_to_row[pid] = len(ids) - 1
+            updated["geometric"] += 1
+        np.savez(
+            geo_path,
+            profile_ids=np.array(ids),
+            vectors=vectors,
+            mean=mean,
+            std=std,
+            weights=data["weights"],
+        )
+
+    return updated
 
 
 def _load_index(method: SimilarityMethod) -> dict:

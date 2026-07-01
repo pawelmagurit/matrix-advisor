@@ -90,7 +90,7 @@ def test_dxf_mask_iou_vs_gif(ezdxf_available):
 
 @pytest.mark.parametrize(
     "stem,min_iou",
-    [("E12223", 0.15), ("E04900", 0.4)],
+    [("E12223", 0.15), ("E04900", 0.9)],
     ids=["E12223", "E04900"],
 )
 def test_block_style_dxf_uses_hatch_not_dimensions(stem: str, min_iou: float, ezdxf_available):
@@ -122,10 +122,15 @@ def test_e03148_concentric_circles_use_ring(ezdxf_available):
 
     result = process_dxf_file(path, persist=False)
     assert result.selection.strategy == "layer"
-    assert "used_extral_pictogram_fallback" in result.quality_flags
+    assert "used_extral_pictogram_fallback" not in result.quality_flags
     gif_mask = _load_extral_pictogram_mask("E03148")
     assert gif_mask is not None
-    assert np.array_equal(result.mask, gif_mask)
+    dxf_bin = (result.mask > 127).astype(np.uint8)
+    gif_bin = (gif_mask > 127).astype(np.uint8)
+    inter = np.logical_and(dxf_bin, gif_bin).sum()
+    union = np.logical_or(dxf_bin, gif_bin).sum()
+    iou = inter / union if union else 0
+    assert iou >= 0.7, f"E03148 ring IoU too low: {iou:.3f}"
 
 
 def test_load_mask_skips_corrupt_cached_png(ezdxf_available):

@@ -82,6 +82,23 @@ def _load_extral_pictogram_mask(profile_id: str) -> np.ndarray | None:
     return load_mask_from_pictogram(profile_id)
 
 
+def _canonical_index_mask(profile_id: str, dxf_mask: np.ndarray) -> np.ndarray:
+    """Pick the mask stored for indexing.
+
+    The similarity index and the DXF-upload query both fall back to the Extral
+    pictogram whenever the DXF cross-section is incomplete. Persisting a
+    degenerate DXF-derived mask (e.g. a solid hatch blob) here would poison the
+    index so the profile can no longer match its own pictogram. Prefer the
+    pictogram mask whenever it disagrees with the DXF mask.
+    """
+    gif_mask = _load_extral_pictogram_mask(profile_id)
+    if gif_mask is None:
+        return dxf_mask
+    if _mask_iou(dxf_mask, gif_mask) < 0.6:
+        return gif_mask
+    return dxf_mask
+
+
 def _try_extral_pictogram_fallback(profile_id: str, mask: np.ndarray, dims: dict[str, float | None]) -> tuple[np.ndarray, list[str]]:
     flags: list[str] = []
     gif_mask = _load_extral_pictogram_mask(profile_id)
@@ -119,8 +136,14 @@ def process_dxf_bytes(
     profile_id: str | None = None,
     source_name: str | None = None,
     persist: bool = False,
+    use_pictogram_fallback: bool = True,
 ) -> DxfProcessResult:
-    """Parse DXF bytes → mask + metadata. Optionally persist to data/."""
+    """Parse DXF bytes → mask + metadata. Optionally persist to data/.
+
+    ``use_pictogram_fallback`` swaps a bad DXF-derived mask for the profile's
+    Extral pictogram when one exists. In production the uploaded profile has no
+    pictogram, so evaluation of raw DXF→mask quality must disable it.
+    """
     ensure_data_dirs()
     dxf_doc = parse_dxf(data=data)
     doc = dxf_doc.doc
@@ -140,8 +163,11 @@ def process_dxf_bytes(
     dim_values = extract_dimension_values(doc)
     dims_mapped = map_dimensions(dim_values)
 
-    mask, fallback_flags = _try_extral_pictogram_fallback(pid, mask, dims_mapped)
-    quality.extend(fallback_flags)
+    if use_pictogram_fallback:
+        mask, fallback_flags = _try_extral_pictogram_fallback(pid, mask, dims_mapped)
+        quality.extend(fallback_flags)
+    elif _dxf_mask_looks_wrong(mask, dims_mapped):
+        quality.append("incomplete_dxf_cross_section")
     bbox = bbox_mm_from_entities(draw_entities)
 
     geom_feat = extract_geometric_features(pid, mask=mask)
@@ -213,7 +239,7 @@ def _persist_dxf(
     feat_path.write_text(json.dumps(features, indent=2, ensure_ascii=False), encoding="utf-8")
 
     PROCESSED_MASKS.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(PROCESSED_MASKS / f"{profile_id}.png"), mask)
+    cv2.imwrite(str(PROCESSED_MASKS / f"{profile_id}.png"), _canonical_index_mask(profile_id, mask))
 
     dims = geometry.get("dimensions_mapped") or {}
     with get_connection() as conn:

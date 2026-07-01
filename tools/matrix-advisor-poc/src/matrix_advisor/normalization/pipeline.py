@@ -5,7 +5,8 @@ import cv2
 import numpy as np
 from skimage.measure import label, regionprops
 
-from matrix_advisor.config import CANVAS_SIZE, PROCESSED_MASKS
+from matrix_advisor import config
+from matrix_advisor.config import CANVAS_SIZE
 from matrix_advisor.db import get_connection
 from matrix_advisor.ingestion.import_csv import get_pictogram_path, list_profile_ids
 from matrix_advisor.models import NormalizationMeta
@@ -62,8 +63,20 @@ def _solidify_mask(binary: np.ndarray) -> np.ndarray:
     if binary.max() == 0:
         return binary
 
+    if _count_holes(binary) > 0:
+        return binary
+
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    h, w = closed.shape
+    inv = (255 - closed).copy()
+    flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+    cv2.floodFill(inv, flood_mask, (0, 0), 0)
+    flood_result = 255 - inv
+    if _count_holes(flood_result) > 0:
+        return flood_result
+
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         filled = np.zeros_like(closed)
@@ -72,12 +85,7 @@ def _solidify_mask(binary: np.ndarray) -> np.ndarray:
         if filled.max() > 0:
             return filled
 
-    # Ring/hatch outlines: flood-fill exterior, keep interior as solid shape.
-    h, w = closed.shape
-    inv = (255 - closed).copy()
-    flood_mask = np.zeros((h + 2, w + 2), np.uint8)
-    cv2.floodFill(inv, flood_mask, (0, 0), 0)
-    return 255 - inv
+    return flood_result
 
 
 def normalize_dxf_raster(raster: np.ndarray) -> tuple[np.ndarray, list[str]]:
@@ -155,7 +163,7 @@ def normalize_bytes(data: bytes) -> tuple[np.ndarray, list[str]]:
 
 
 def mask_path_for(profile_id: str) -> Path:
-    return PROCESSED_MASKS / f"{profile_id}.png"
+    return config.PROCESSED_MASKS / f"{profile_id}.png"
 
 
 def normalize_profile(profile_id: str) -> Path | None:
@@ -163,7 +171,7 @@ def normalize_profile(profile_id: str) -> Path | None:
     if src is None:
         return None
     mask, meta, _ = normalize_image(src)
-    PROCESSED_MASKS.mkdir(parents=True, exist_ok=True)
+    config.PROCESSED_MASKS.mkdir(parents=True, exist_ok=True)
     out = mask_path_for(profile_id)
     cv2.imwrite(str(out), mask)
 
@@ -236,3 +244,51 @@ def load_mask(profile_id: str) -> np.ndarray | None:
         if img is not None and not _mask_is_corrupt(img):
             return img
     return load_mask_from_pictogram(profile_id)
+
+
+def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+    a_bin = a > 127
+    b_bin = b > 127
+    union = np.logical_or(a_bin, b_bin).sum()
+    if union == 0:
+        return 0.0
+    return float(np.logical_and(a_bin, b_bin).sum() / union)
+
+
+def find_masks_disagreeing_with_pictogram(
+    profile_ids: list[str] | None = None,
+    iou_threshold: float = 0.9,
+) -> list[str]:
+    """Return profile ids whose stored mask badly disagrees with the pictogram.
+
+    DXF import can overwrite the canonical pictogram-derived mask with a
+    degenerate DXF raster, which then poisons the similarity index (the profile
+    stops matching its own pictogram). These are the masks that need repair.
+    """
+    ids = profile_ids or list_profile_ids()
+    out: list[str] = []
+    for pid in ids:
+        pic = load_mask_from_pictogram(pid)
+        if pic is None:
+            continue
+        path = mask_path_for(pid)
+        stored = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) if path.exists() else None
+        if stored is None or _mask_iou(stored, pic) < iou_threshold:
+            out.append(pid)
+    return out
+
+
+def repair_masks(
+    profile_ids: list[str] | None = None,
+    iou_threshold: float = 0.9,
+) -> list[str]:
+    """Regenerate degenerate stored masks from their Extral pictograms.
+
+    Returns the list of repaired profile ids.
+    """
+    to_fix = find_masks_disagreeing_with_pictogram(profile_ids, iou_threshold)
+    repaired: list[str] = []
+    for pid in to_fix:
+        if normalize_profile(pid) is not None:
+            repaired.append(pid)
+    return repaired
